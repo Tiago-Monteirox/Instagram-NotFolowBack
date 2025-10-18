@@ -1,0 +1,207 @@
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8" />
+  <title>Quem não me segue de volta? — Links + CSV</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { --bg:#0b0c10; --card:#111317; --muted:#9aa4b2; --text:#e5e7eb; --accent:#7c3aed; }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
+    .wrap{max-width:960px;margin:40px auto;padding:0 20px}
+    .card{background:var(--card);border:1px solid #1f2430;border-radius:16px;padding:20px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    h1{margin:0 0 8px 0;font-size:28px}
+    p.subtitle{margin:0 0 20px 0;color:var(--muted)}
+    .row{margin:14px 0}
+    label{display:block;margin-bottom:8px;color:var(--muted)}
+    input[type=file]{width:100%;padding:10px;background:#0f1116;border:1px dashed #30374a;border-radius:12px;color:var(--text)}
+    button{appearance:none;border:none;background:var(--accent);color:white;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
+    button.ghost{background:transparent;border:1px solid #2b3242;color:var(--text)}
+    .actions{display:flex;gap:10px;flex-wrap:wrap}
+    .stat{display:inline-flex;gap:10px;align-items:center;padding:10px 12px;border:1px solid #2b3242;border-radius:12px;color:var(--muted)}
+    .grid{width:100%;overflow:auto;border:1px solid #1f2430;border-radius:12px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px 12px;border-bottom:1px solid #1f2430;text-align:left}
+    th{position:sticky;top:0;background:#0f1116;font-weight:700}
+    tr:hover td{background:#0f1116}
+    a{color:#9bc2ff;text-decoration:none}
+    a:hover{text-decoration:underline}
+    .muted{color:var(--muted)}
+    .footer{margin-top:14px;color:var(--muted);font-size:12px}
+    .pill{display:inline-block;padding:2px 8px;border:1px solid #2b3242;border-radius:999px;margin-left:8px;font-size:12px;color:var(--muted)}
+    .hidden{display:none}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Verificador de Seguidores (local)</h1>
+      <p class="subtitle">Compare seus arquivos exportados do Instagram e gere uma lista de quem você segue, mas não te segue de volta. Tudo roda 100% no seu navegador.</p>
+
+      <div class="row">
+        <label>Arquivo de seguidores <strong>(followers_*.json)</strong></label>
+        <input type="file" id="followers_file" accept=".json" />
+      </div>
+      <div class="row">
+        <label>Arquivo de seguindo <strong>(following.json)</strong></label>
+        <input type="file" id="following_file" accept=".json" />
+      </div>
+
+      <div class="row actions">
+        <button id="run">Comparar</button>
+        <button id="exportCsv" class="ghost" disabled>Exportar CSV</button>
+        <span class="stat" id="counts">Arquivos não carregados</span>
+      </div>
+
+      <div class="row">
+        <div class="grid">
+          <table id="resultTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Usuário</th>
+                <th>Link</th>
+              </tr>
+            </thead>
+            <tbody id="tbody">
+              <tr><td colspan="3" class="muted">Nenhum resultado ainda. Importe os arquivos e clique em <em>Comparar</em>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="footer">
+          Formatos suportados:
+          <span class="pill">followers: array com <code>string_list_data[0].value</code> / <code>href</code></span>
+          <span class="pill">following: objeto com <code>relationships_following[]</code> (ou <code>following[]</code>)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /** Utilitários **/
+    const byId = (id) => document.getElementById(id);
+    const safeUsername = (v) => (v || "").toString().trim();
+    const toInstaUrl = (u, href) => href || (u ? `https://www.instagram.com/${encodeURIComponent(u)}` : "");
+
+    /**
+     * followers.json — normalmente um ARRAY
+     * Cada item: { string_list_data: [{ value, href, timestamp }] }
+     * Retorna Map(username -> href)
+     */
+    function extractFollowers(json){
+      let arr = Array.isArray(json) ? json : (json?.followers || []);
+      const map = new Map();
+      for(const it of arr){
+        const slot = it?.string_list_data?.[0] || {};
+        const user = safeUsername(slot.value || it?.title);
+        const href = slot.href || "";
+        if(user) map.set(user, href);
+      }
+      return map; // Map: followers
+    }
+
+    /**
+     * following.json — normalmente um OBJETO com relationships_following: []
+     * Cada item: { title, string_list_data: [{ href, timestamp }] } — às vezes title está vazio e value vem no string_list_data
+     * Retorna Array<{ user, href }>
+     */
+    function extractFollowing(json){
+      const raw = json?.relationships_following || json?.following || [];
+      const out = [];
+      for(const it of raw){
+        const slot = it?.string_list_data?.[0] || {};
+        const user = safeUsername(it?.title || slot.value);
+        const href = slot.href || "";
+        if(user) out.push({ user, href });
+      }
+      return out; // Array de objetos
+    }
+
+    /** Renderiza tabela e ativa export **/
+    function renderResults(rows){
+      const tbody = byId('tbody');
+      tbody.innerHTML = '';
+      if(!rows.length){
+        tbody.innerHTML = '<tr><td colspan="3" class="muted">Todo mundo te segue de volta 🎉</td></tr>';
+        byId('exportCsv').disabled = true;
+        return;
+      }
+      rows.forEach((r, i) => {
+        const tr = document.createElement('tr');
+        const url = toInstaUrl(r.user, r.href);
+        tr.innerHTML = `
+          <td>${i+1}</td>
+          <td>${r.user}</td>
+          <td><a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></td>
+        `;
+        tbody.appendChild(tr);
+      });
+      byId('exportCsv').disabled = false;
+    }
+
+    /** Gera CSV simples **/
+    function toCSV(rows){
+      const header = ['username','url'];
+      const lines = [header.join(',')];
+      for(const r of rows){
+        const url = toInstaUrl(r.user, r.href);
+        // Escapar "," e aspas
+        const u = '"' + r.user.replaceAll('"','""') + '"';
+        const h = '"' + url.replaceAll('"','""') + '"';
+        lines.push([u,h].join(','));
+      }
+      return lines.join('\n');
+    }
+
+    /** Estado **/
+    let currentRows = [];
+
+    byId('run').addEventListener('click', async () => {
+      const followersFile = byId('followers_file').files?.[0];
+      const followingFile = byId('following_file').files?.[0];
+      const counts = byId('counts');
+
+      if(!followersFile || !followingFile){
+        alert('Selecione os dois arquivos .json exportados do Instagram.');
+        return;
+      }
+
+      try{
+        const [followersText, followingText] = await Promise.all([
+          followersFile.text(), followingFile.text()
+        ]);
+        const followersJson = JSON.parse(followersText);
+        const followingJson = JSON.parse(followingText);
+
+        const followers = extractFollowers(followersJson); // Map
+        const following = extractFollowing(followingJson); // Array
+
+        // Quem NÃO me segue de volta: seguindo que não está no conjunto de seguidores
+        const nonFollowers = following
+          .filter(({user}) => !followers.has(user))
+          .sort((a,b) => a.user.localeCompare(b.user));
+
+        currentRows = nonFollowers;
+        renderResults(nonFollowers);
+        counts.textContent = `Seguidores: ${followers.size} | Seguindo: ${following.length} | Não te seguem: ${nonFollowers.length}`;
+      }catch(e){
+        console.error(e);
+        alert('Erro ao ler/parsear os JSONs: ' + e.message);
+      }
+    });
+
+    byId('exportCsv').addEventListener('click', () => {
+      if(!currentRows.length) return;
+      const csv = toCSV(currentRows);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'nao_te_seguem.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>
